@@ -3,6 +3,11 @@ arnio.exceptions
 Custom exceptions for the Arnio library.
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .schema import ValidationResult
+
 
 class ArnioError(Exception):
     """Base exception for all Arnio errors."""
@@ -27,6 +32,12 @@ class CsvReadError(ArnioError):
     pass
 
 
+class JsonlReadError(ArnioError):
+    """Raised when a JSON Lines file cannot be read or contains malformed data."""
+
+    pass
+
+
 class TypeCastError(ArnioError):
     """Raised when cast_types encounters an incompatible type."""
 
@@ -42,3 +53,11 @@ class PipelineStepError(ArnioError):
         super().__init__(
             f"Error occurred during custom pipeline step '{step_name}': {orig_err}"
         )
+
+
+class SchemaValidationError(ArnioError):
+    """Raised when a dataframe fails schema validation."""
+
+    def __init__(self, message: str, result: "ValidationResult" = None):
+        self.result = result
+        super().__init__(message)

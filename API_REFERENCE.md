@@ -6,12 +6,12 @@ A technical reference guide to the public classes and functions within the **Arn
 
 | Category              | Components                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | :-------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Core Class**        | [**`ArFrame`**](#arframe) ï Properties: [`shape`](#shape), [`columns`](#columns), [`dtypes`](#dtypes) ï [`is_empty`](#is_empty) ï Methods: [`memory_usage`](#memory_usage), [`preview`](#preview), [`select_columns`](#select_columns), [`select_dtypes`](#select_dtypes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **I/O**               | [`read_csv`](#read_csv) ï [`scan_csv`](#scan_csv) ï [`write_csv`](#write_csv)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Cleaning**          | [`cast_types`](#cast_types) ï [`clean`](#clean) ï [`clip_numeric`](#clip_numeric) ï [`combine_columns`](#combine_columns) ï [`drop_columns`](#drop_columns) ï [`drop_constant_columns`](#drop_constant_columns) ï [`drop_duplicates`](#drop_duplicates) ï [`drop_nulls`](#drop_nulls) ï [`fill_nulls`](#fill_nulls) ï [`filter_rows`](#filter_rows) ï [`keep_rows_with_nulls`](#keep_rows_with_nulls) ï [`normalize_case`](#normalize_case) ï [`normalize_unicode`](#normalize_unicode) ï [`rename_columns`](#rename_columns) ï [`replace_values`](#replace_values) ï [`round_numeric_columns`](#round_numeric_columns) ï [`safe_divide_columns`](#safe_divide_columns) ï [`strip_whitespace`](#strip_whitespace) ï [`trim_column_names`](#trim_column_names) ï [`validate_columns_exist`](#validate_columns_exist) |
-| **Conversion**        | [`from_pandas`](#from_pandas) ï [`to_pandas`](#to_pandas)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Core Class**        | [**`ArFrame`**](#arframe), Properties: [`shape`](#shape), [`columns`](#columns), [`dtypes`](#dtypes), [`is_empty`](#is_empty), Methods: [`memory_usage`](#memory_usage), [`preview`](#preview), [`select_columns`](#select_columns), [`select_dtypes`](#select_dtypes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **I/O**               | [`read_csv`](#read_csv), [`scan_csv`](#scan_csv), [`write_csv`](#write_csv), [`sniff_delimiter`](#sniff_delimiter)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Cleaning**          | [`cast_types`](#cast_types), [`clean`](#clean), [`clip_numeric`](#clip_numeric), [`combine_columns`](#combine_columns), [`drop_columns`](#drop_columns), [`drop_constant_columns`](#drop_constant_columns), [`drop_duplicates`](#drop_duplicates), [`drop_nulls`](#drop_nulls), [`fill_nulls`](#fill_nulls), [`filter_rows`](#filter_rows), [`keep_rows_with_nulls`](#keep_rows_with_nulls), [`normalize_case`](#normalize_case), [`normalize_unicode`](#normalize_unicode), [`rename_columns`](#rename_columns), [`replace_values`](#replace_values), [`round_numeric_columns`](#round_numeric_columns), [`safe_divide_columns`](#safe_divide_columns), [`strip_whitespace`](#strip_whitespace), [`trim_column_names`](#trim_column_names), [`validate_columns_exist`](#validate_columns_exist) |
+| **Conversion**        | [`from_pandas`](#from_pandas), [`to_pandas`](#to_pandas)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **Integration**       | [`ArnioPandasAccessor`](#arniopandasaccessor)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| **Pipeline**          | [`pipeline`](#pipeline) ï [`register_step`](#register_step)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Pipeline**          | [`pipeline`](#pipeline), [`register_step`](#register_step)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **Data Quality**      | [`profile`](#profile) ‚Ä¢ [`suggest_cleaning`](#suggest_cleaning) ‚Ä¢ [`auto_clean`](#auto_clean) ‚Ä¢ [`check_quality_gates`](#check_quality_gates) ‚Ä¢ [`DataQualityReport`](#dataqualityreport) ‚Ä¢ [`ColumnProfile`](#columnprofile)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Schema Validation** | [`Schema`](#schema) ‚Ä¢ [`Field`](#field) ‚Ä¢ [`validate`](#validate) ‚Ä¢ [`ValidationResult`](#validationresult) ‚Ä¢ [`ValidationIssue`](#validationissue) ‚Ä¢ [`Int64`](#int64) ‚Ä¢ [`Float64`](#float64) ‚Ä¢ [`String`](#string) ‚Ä¢ [`Bool`](#bool) ‚Ä¢ [`Email`](#email) ‚Ä¢ [`URL`](#url) ‚Ä¢ [`CountryCode`](#countrycode) ‚Ä¢ [`DateTime`](#datetime)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **Custom Exceptions** | [`ArnioError`](#arnioerror) ‚Ä¢ [`CsvReadError`](#csvreaderror) ‚Ä¢ [`TypeCastError`](#typecasterror) ‚Ä¢ [`UnknownStepError`](#unknownsteperror)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -110,6 +110,46 @@ ar.write_csv(frame, "output.csv", write_header=False)
 
 # Windows line endings
 ar.write_csv(frame, "output.csv", line_terminator="\r\n")
+```
+
+### sniff_delimiter
+
+Sniffs and returns the field delimiter character from a CSV file.
+
+```python
+delimiter = ar.sniff_delimiter("data.csv")
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | `str \| os.PathLike[str]` | required | Path to the CSV file |
+| `encoding` | `str` | `"utf-8"` | File encoding |
+| `sample_size` | `int` | `2048` | Number of bytes to sample from the start of the file for sniffing |
+
+#### Returns
+
+`str`
+The detected delimiter (one of `","`, `";"`, `"\t"`, `"|"`).
+
+#### Raises
+
+| Error | When |
+|-------|------|
+| `TypeError` | `encoding` is not a string, or `sample_size` is not an integer |
+| `ValueError` | `sample_size` is <= 0, the encoding is unknown, or the delimiter is ambiguous / tied |
+| `CsvReadError` | The file is empty, or contains binary data (NUL bytes) |
+| `FileNotFoundError` | The file does not exist |
+
+#### Examples
+
+```python
+# Sniff comma-separated file
+delim = ar.sniff_delimiter("comma.csv")  # returns ","
+
+# Sniff semicolon-separated file with custom sample size
+delim = ar.sniff_delimiter("semicolon.csv", sample_size=1024)  # returns ";"
 ```
 
 ---
@@ -424,6 +464,20 @@ The primary function used to check an `ArFrame` against a `Schema`. It returns a
 #### <a name="validationresult"></a>ValidationResult / <a name="validationissue"></a>ValidationIssue
 
 The objects returned after calling `validate()`.
+
+**Row index convention:** `ValidationIssue.row_index` is **1-based** and refers to
+data rows only ‚Äî the CSV header is not counted. So `row_index=1` means the first
+data row, `row_index=2` means the second, and so on.
+
+```python
+# CSV content:
+# name,age        ‚Üê header (not counted)
+# Alice,30        ‚Üê row 1
+# Bob,-1          ‚Üê row 2  ‚Üê row_index=2 will appear here for a min violation
+
+result = ar.validate(frame, {"age": ar.Int64(min=0)})
+print(result.issues[0].row_index)  # 2
+```
 
 #### Field Type Helpers
 
