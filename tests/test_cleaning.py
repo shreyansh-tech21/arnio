@@ -508,18 +508,67 @@ class TestSharedColumnSequenceValidation:
 
         assert list(df.columns) == ["id", "name"]
 
-    def test_combine_columns_preserves_duplicate_subset_entries(self):
+    def test_combine_columns_rejects_duplicate_subset_entries(self):
         frame = ar.from_pandas(pd.DataFrame({"word": ["go"], "suffix": ["!"]}))
 
-        result = ar.combine_columns(
-            frame,
-            subset=["word", "word", "suffix"],
-            separator="-",
-            output_column="combined",
-        )
-        df = ar.to_pandas(result)
+        with pytest.raises(ValueError, match="duplicate column names"):
+            ar.combine_columns(
+                frame,
+                subset=["word", "word", "suffix"],
+                separator="-",
+                output_column="combined",
+            )
 
-        assert df["combined"].tolist() == ["go-go-!"]
+    def test_combine_columns_rejects_duplicate_subset_direct(self):
+        frame = ar.from_pandas(pd.DataFrame({"a": ["x"], "b": ["y"]}))
+
+        with pytest.raises(ValueError, match="duplicate column names"):
+            ar.combine_columns(frame, subset=["a", "a"], output_column="combined")
+
+    def test_combine_columns_pipeline_rejects_duplicate_subset(self):
+        frame = ar.from_pandas(pd.DataFrame({"a": ["x"], "b": ["y"]}))
+
+        with pytest.raises(ValueError, match="duplicate column names"):
+            ar.pipeline(
+                frame,
+                [
+                    (
+                        "combine_columns",
+                        {"subset": ["a", "a"], "output_column": "combined"},
+                    )
+                ],
+            )
+
+    def test_coalesce_columns_rejects_duplicate_subset_entries(self):
+        frame = ar.from_pandas(
+            pd.DataFrame({"nickname": [None, "Bee"], "name": ["Alice", "Bob"]})
+        )
+
+        with pytest.raises(ValueError, match="duplicate column names"):
+            ar.coalesce_columns(
+                frame,
+                subset=["nickname", "nickname"],
+                output_column="display_name",
+            )
+
+    def test_coalesce_columns_pipeline_rejects_duplicate_subset(self):
+        frame = ar.from_pandas(
+            pd.DataFrame({"nickname": [None, "Bee"], "name": ["Alice", "Bob"]})
+        )
+
+        with pytest.raises(ValueError, match="duplicate column names"):
+            ar.pipeline(
+                frame,
+                [
+                    (
+                        "coalesce_columns",
+                        {
+                            "subset": ["nickname", "nickname"],
+                            "output_column": "display_name",
+                        },
+                    )
+                ],
+            )
 
 
 class TestDropDuplicates:
@@ -660,6 +709,31 @@ class TestDropDuplicates:
         result = ar.drop_duplicates(frame)
         assert result.shape[0] == 2
 
+    def test_drop_dupes_with_nan_and_nulls(self):
+        import numpy as np
+        import pandas as pd
+
+        df = pd.DataFrame(
+            {
+                "id": [1, 1, 2, 2, 3, 3],
+                "val1": [np.nan, np.nan, 10.5, 10.5, None, None],
+                "val2": ["a", "a", "b", "b", None, None],
+            }
+        )
+        frame = ar.from_pandas(df)
+
+        # keep="first"
+        res_first = ar.to_pandas(ar.drop_duplicates(frame, keep="first"))
+        assert len(res_first) == 3
+
+        # keep="none"
+        res_none = ar.to_pandas(ar.drop_duplicates(frame, keep="none"))
+        assert len(res_none) == 0
+
+        # subset with NaN
+        res_subset = ar.to_pandas(ar.drop_duplicates(frame, subset=["val1"]))
+        assert len(res_subset) == 2
+
 
 class TestDropColumns:
     def test_drop_columns_removes_requested_columns_and_preserves_order(self):
@@ -679,6 +753,22 @@ class TestDropColumns:
 
         assert list(df.columns) == ["id", "name"]
         assert list(df["name"]) == ["Alice", "Bob"]
+
+    def test_drop_columns_accepts_tuple_input(self):
+        frame = ar.from_pandas(
+            pd.DataFrame(
+                {
+                    "a": [1],
+                    "b": [2],
+                    "c": [3],
+                }
+            )
+        )
+
+        result = ar.drop_columns(frame, ("a",))
+        df = ar.to_pandas(result)
+
+        assert list(df.columns) == ["b", "c"]
 
     def test_drop_columns_allows_empty_input_as_no_op(self, sample_csv):
         frame = ar.read_csv(sample_csv)
@@ -865,6 +955,33 @@ class TestDropConstantColumns:
             TypeError, match="frame must be an ArFrame or a pandas DataFrame"
         ):
             ar.drop_constant_columns([1, 2, 3])
+
+    def test_drop_constant_columns_zero_row_pandas_returns_new_object(self):
+        df = pd.DataFrame({"a": pd.Series(dtype="int64")})
+
+        result = ar.drop_constant_columns(df)
+
+        assert result is not df
+        assert result.shape == (0, 1)
+
+    def test_drop_constant_columns_zero_row_arframe_returns_new_object(self):
+        frame = ar.from_pandas(pd.DataFrame({"a": pd.Series(dtype="int64")}))
+
+        result = ar.drop_constant_columns(frame)
+
+        assert result is not frame
+        assert result.shape == (0, 1)
+
+    def test_drop_constant_columns_zero_row_attrs_not_shared(self):
+        frame = ar.from_pandas(pd.DataFrame({"a": pd.Series(dtype="int64")}))
+
+        frame._attrs = {"nested": {"x": 1}}
+
+        result = ar.drop_constant_columns(frame)
+
+        result._attrs["nested"]["x"] = 2
+
+        assert frame._attrs["nested"]["x"] == 1
 
 
 class TestDropEmptyColumns:
@@ -2080,11 +2197,34 @@ class TestParseBoolStrings:
         df = pd.DataFrame({"active": ["yes", "no"]}, dtype=object)
         frame = ar.from_pandas(df)
 
-        with pytest.raises(TypeError, match="'int' object is not iterable"):
+        with pytest.raises(
+            TypeError, match="true_values must be a set, list, or tuple of strings"
+        ):
             ar.parse_bool_strings(frame, true_values=123)
 
-        with pytest.raises(TypeError, match="'float' object is not iterable"):
+        with pytest.raises(
+            TypeError,
+            match="false_values must be a set, list, or tuple of strings",
+        ):
             ar.parse_bool_strings(frame, false_values=45.6)
+
+    def test_parse_bool_strings_rejects_mapping_containers(self):
+        import pandas as pd
+
+        df = pd.DataFrame({"active": ["yes", "no"]}, dtype=object)
+        frame = ar.from_pandas(df)
+
+        with pytest.raises(
+            TypeError,
+            match="true_values must be a set, list, or tuple of strings",
+        ):
+            ar.parse_bool_strings(frame, true_values={"yes": 1})
+
+        with pytest.raises(
+            TypeError,
+            match="false_values must be a set, list, or tuple of strings",
+        ):
+            ar.parse_bool_strings(frame, false_values={"no": 1})
 
     def test_parse_bool_strings_overlap_whitespace_and_case_normalization(self):
         """Test that tokens that overlap after case folding and whitespace stripping are correctly rejected."""
@@ -2363,8 +2503,8 @@ class TestCastTypes:
     def test_cast_rejects_invalid_errors_policy(self, sample_csv):
         frame = ar.read_csv(sample_csv)
 
-        with pytest.raises(ValueError, match="errors must be either"):
-            ar.cast_types(frame, {"age": "int64"}, errors="ignore")
+        with pytest.raises(ValueError, match="errors must be one of"):
+            ar.cast_types(frame, {"age": "int64"}, errors="warn")
 
     @pytest.mark.parametrize(
         "mapping",
@@ -2488,6 +2628,15 @@ class TestCastTypes:
         assert df["score"].iloc[0] == 1.5
         assert pd.isna(df["score"].iloc[1])
 
+    def test_cast_string_to_float_unparseable_ignores_column(self):
+        frame = ar.from_pandas(pd.DataFrame({"score": ["1.5", "abc"]}))
+
+        result = ar.cast_types(frame, {"score": "float64"}, errors="ignore")
+        df = ar.to_pandas(result)
+
+        assert result.dtypes["score"] == "string"
+        assert list(df["score"]) == ["1.5", "abc"]
+
     def test_cast_string_to_int_unparseable_raises(self):
         # "hello" cannot be parsed as int64, raises TypeCastError by default
         frame = ar.from_pandas(pd.DataFrame({"age": ["10", "hello"]}))
@@ -2502,6 +2651,34 @@ class TestCastTypes:
         assert result.dtypes["age"] == "int64"
         assert df["age"].iloc[0] == 10
         assert pd.isna(df["age"].iloc[1])
+
+    def test_cast_ignore_casts_valid_columns_and_preserves_invalid_columns(self):
+        frame = ar.from_pandas(
+            pd.DataFrame(
+                {
+                    "age": ["10", "hello"],
+                    "score": ["1.5", "2.25"],
+                }
+            )
+        )
+
+        result = ar.cast_types(
+            frame,
+            {"age": "int64", "score": "float64"},
+            errors="ignore",
+        )
+        df = ar.to_pandas(result)
+
+        assert result.dtypes["age"] == "string"
+        assert result.dtypes["score"] == "float64"
+        assert list(df["age"]) == ["10", "hello"]
+        assert list(df["score"]) == [1.5, 2.25]
+
+    def test_cast_ignore_still_rejects_unknown_target_dtype(self):
+        frame = ar.from_pandas(pd.DataFrame({"age": ["10", "20"]}))
+
+        with pytest.raises(ar.TypeCastError, match="Unknown target dtype"):
+            ar.cast_types(frame, {"age": "datetime"}, errors="ignore")
 
     def test_cast_invalid_dtype_string_raises(self):
         # "datetime" is not a supported type, raises TypeCastError
@@ -2609,7 +2786,6 @@ class TestFilterRows:
 
     def test_filter_rows_rejects_list_like_values(self):
         df = pd.DataFrame({"a": [1, 2, 3]})
-
         list_like_values = [
             [1, 2],
             (1, 2),
@@ -2622,6 +2798,24 @@ class TestFilterRows:
         for value in list_like_values:
             with pytest.raises(TypeError, match="filter_rows value must be a scalar"):
                 ar.filter_rows(df, "a", "==", value)
+
+    def test_filter_rows_non_string_column_raises_type_error(self):
+        frame = ar.from_pandas(pd.DataFrame({"x": [1, 2, 3]}))
+
+        with pytest.raises(TypeError, match="column must be a non-empty string"):
+            ar.filter_rows(frame, column=123, op="==", value=1)
+
+    def test_filter_rows_empty_string_column_raises_type_error(self):
+        frame = ar.from_pandas(pd.DataFrame({"x": [1, 2, 3]}))
+
+        with pytest.raises(TypeError, match="column must be a non-empty string"):
+            ar.filter_rows(frame, column="", op="==", value=1)
+
+    def test_filter_rows_non_string_op_raises_type_error(self):
+        frame = ar.from_pandas(pd.DataFrame({"x": [1, 2, 3]}))
+
+        with pytest.raises(TypeError, match="op must be a string"):
+            ar.filter_rows(frame, column="x", op=["=="], value=1)
 
 
 class TestMappingValidation:
@@ -2863,7 +3057,9 @@ class TestRoundNumericColumns:
 
         df = pd.DataFrame({"a": [1.123]})
         frame = ar.from_pandas(df)
-        with pytest.raises(TypeError, match="subset must be a list"):
+        with pytest.raises(
+            TypeError, match="subset must be a sequence of column names"
+        ):
             ar.round_numeric_columns(frame, subset="a")
 
     def test_invalid_decimals_type(self):
@@ -2893,6 +3089,41 @@ class TestRoundNumericColumns:
         assert result["a"].tolist() == [1.2, 5.7]
         assert result["label"].tolist() == ["x", "y"]
         assert df["a"].tolist() == [1.234, 5.678]
+
+    def test_round_tuple_subset(self):
+        import pandas as pd
+
+        df = pd.DataFrame({"a": [1.123, 2.456], "b": [3.789, 4.0]})
+
+        frame = ar.from_pandas(df)
+
+        result = ar.round_numeric_columns(
+            frame,
+            subset=("a",),
+            decimals=1,
+        )
+
+        result_df = ar.to_pandas(result)
+
+        assert list(result_df["a"]) == [1.1, 2.5]
+        assert list(result_df["b"]) == [3.789, 4.0]
+
+    def test_round_tuple_subset_non_string_member(self):
+        import pandas as pd
+
+        df = pd.DataFrame({"a": [1.123]})
+
+        frame = ar.from_pandas(df)
+
+        with pytest.raises(
+            TypeError,
+            match="string column names",
+        ):
+            ar.round_numeric_columns(
+                frame,
+                subset=("a", 123),
+                decimals=1,
+            )
 
 
 class TestCombineColumns:
@@ -3837,6 +4068,91 @@ class TestSelectColumns:
         with pytest.raises(ValueError):
             ar.select_columns(frame, ["id", "id"])
 
+    def test_select_columns_null_nan_handling(self):
+        df = pd.DataFrame(
+            {
+                "id": [1, None, 3],
+                "name": ["Alice", "Bob", None],
+                "score": [95.5, float("nan"), 80.0],
+            }
+        )
+        frame = ar.from_pandas(df)
+        selected = ar.select_columns(frame, ["id", "score"])
+        res_df = ar.to_pandas(selected)
+        assert pd.isna(res_df["id"].iloc[1])
+        assert pd.isna(res_df["score"].iloc[1])
+        assert res_df["id"].iloc[0] == 1
+        assert res_df["score"].iloc[0] == 95.5
+
+    def test_select_columns_single_column_frame(self):
+        df = pd.DataFrame({"id": [1, 2]})
+        frame = ar.from_pandas(df)
+        selected = ar.select_columns(frame, ["id"])
+        assert selected.columns == ["id"]
+        assert selected.shape == (2, 1)
+
+        multi_df = pd.DataFrame({"id": [1, 2], "name": ["A", "B"]})
+        multi_frame = ar.from_pandas(multi_df)
+        selected_single = ar.select_columns(multi_frame, ["name"])
+        assert selected_single.columns == ["name"]
+        assert selected_single.shape == (2, 1)
+
+    def test_select_columns_reordering(self):
+        df = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "name": ["Alice", "Bob"],
+                "age": [25, 30],
+            }
+        )
+        frame = ar.from_pandas(df)
+        reordered = ar.select_columns(frame, ["age", "id", "name"])
+        assert reordered.columns == ["age", "id", "name"]
+        res_df = ar.to_pandas(reordered)
+        assert list(res_df["age"]) == [25, 30]
+        assert list(res_df["id"]) == [1, 2]
+        assert list(res_df["name"]) == ["Alice", "Bob"]
+
+    def test_select_columns_invalid_container_types(self):
+        df = pd.DataFrame({"id": [1, 2], "name": ["A", "B"]})
+        frame = ar.from_pandas(df)
+
+        with pytest.raises(TypeError, match="must be a list or tuple"):
+            ar.select_columns(frame, {"id": "name"})
+
+        gen = (col for col in ["id"])
+        with pytest.raises(TypeError, match="must be a list or tuple"):
+            ar.select_columns(frame, gen)
+
+        with pytest.raises(TypeError, match="must be a list or tuple"):
+            ar.select_columns(frame, None)
+        with pytest.raises(TypeError, match="must be a list or tuple"):
+            ar.select_columns(frame, 123)
+
+    def test_select_columns_dtype_preservation(self):
+        df = pd.DataFrame(
+            {
+                "int_col": pd.Series([1, 2], dtype="Int64"),
+                "float_col": pd.Series([1.5, 2.5], dtype="float64"),
+                "bool_col": pd.Series([True, False], dtype="boolean"),
+                "str_col": pd.Series(["A", "B"], dtype="string"),
+            }
+        )
+        frame = ar.from_pandas(df)
+        original_dtypes = frame.dtypes
+
+        selected = ar.select_columns(frame, ["float_col", "str_col", "int_col"])
+        new_dtypes = selected.dtypes
+
+        assert new_dtypes["int_col"] == original_dtypes["int_col"]
+        assert new_dtypes["float_col"] == original_dtypes["float_col"]
+        assert new_dtypes["str_col"] == original_dtypes["str_col"]
+
+        res_df = ar.to_pandas(selected)
+        assert res_df["int_col"].dtype == pd.Int64Dtype()
+        assert res_df["float_col"].dtype == "float64"
+        assert res_df["str_col"].dtype == pd.StringDtype()
+
 
 class TestFilterReplaceTypeAnnotations:
     """Issue #1257 — filter_rows and replace_values accept and return both ArFrame and pd.DataFrame."""
@@ -3980,6 +4296,26 @@ class TestCleanColumnNames:
         frame = from_pandas(df)
         result = ar.clean_column_names(frame)
         assert to_pandas(result).columns.tolist() == ["my_name", "age"]
+
+    def test_clean_column_names_noop_returns_fresh_frame(self):
+        df = pd.DataFrame({"name": [1], "age": [2]})
+        frame = from_pandas(df)
+
+        result = ar.clean_column_names(frame)
+
+        assert result is not frame
+        assert to_pandas(result).equals(to_pandas(frame))
+
+    def test_clean_column_names_noop_attrs_are_isolated(self):
+        df = pd.DataFrame({"name": [1], "age": [2]})
+        frame = from_pandas(df)
+        frame._attrs = {"source": {"name": "original"}}
+
+        result = ar.clean_column_names(frame)
+
+        result._attrs["source"]["name"] = "mutated"
+
+        assert frame._attrs["source"]["name"] == "original"
 
     def test_clean_column_names_consecutive_and_boundary_underscores(self):
         df = pd.DataFrame({"__col__name__": [1], "-another--col-": [2]})

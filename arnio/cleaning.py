@@ -118,6 +118,7 @@ def _validate_existing_column_sequence(
     available_columns: Sequence[str],
     argument_name: str,
     allow_empty: bool = True,
+    reject_duplicates: bool = False,
     missing_error: type[Exception] = KeyError,
     missing_message: Callable[[list[str], str], str] | None = None,
 ) -> list[str]:
@@ -125,6 +126,18 @@ def _validate_existing_column_sequence(
 
     if not normalized and not allow_empty:
         raise ValueError(f"{argument_name} cannot be empty")
+
+    if reject_duplicates:
+        seen = set()
+        duplicates = []
+        for col in normalized:
+            if col in seen and col not in duplicates:
+                duplicates.append(col)
+            seen.add(col)
+        if duplicates:
+            raise ValueError(
+                f"{argument_name} contains duplicate column names: {duplicates}"
+            )
 
     missing = [column for column in normalized if column not in available_columns]
     if missing:
@@ -507,7 +520,17 @@ def drop_constant_columns(
     frame, is_arframe = _validate_frame(frame, allow_pandas=True)
     df = to_pandas(frame) if is_arframe else frame
     if len(df.index) == 0:
-        return frame
+        result_df = df.copy(deep=True)
+
+        if is_arframe:
+            result = from_pandas(result_df)
+
+            if getattr(frame, "_attrs", None) is not None:
+                result._attrs = copy.deepcopy(frame._attrs)
+
+            return result
+
+        return result_df
 
     nunique_counts = df.nunique(dropna=False)
     constant_columns = nunique_counts[nunique_counts == 1].index.tolist()
@@ -763,7 +786,7 @@ def winsorize_outliers(
         target_columns = numeric_columns
 
     if not target_columns:
-        return frame
+        return from_pandas(to_pandas(frame))
 
     df = to_pandas(frame).copy(deep=False)
 
@@ -908,7 +931,17 @@ def parse_bool_strings(
         raise TypeError(
             "false_values must be a set/list/tuple of strings, not a bare string"
         )
+    if true_values is not None and (
+        isinstance(true_values, Mapping)
+        or not isinstance(true_values, (set, list, tuple))
+    ):
+        raise TypeError("true_values must be a set, list, or tuple of strings")
 
+    if false_values is not None and (
+        isinstance(false_values, Mapping)
+        or not isinstance(false_values, (set, list, tuple))
+    ):
+        raise TypeError("false_values must be a set, list, or tuple of strings")
     df = to_pandas(frame).copy(deep=False)
     if true_values is None:
         true_values = {"true", "yes", "y", "1"}
@@ -1224,8 +1257,9 @@ def cast_types(
         Input data frame.
     mapping : dict[str, str]
         Dictionary mapping column names to target type strings (e.g., "int64", "float64", "bool", "string").
-    errors : {"raise", "coerce"}, default "raise"
-        Whether invalid casts raise ``TypeCastError`` or become null values.
+    errors : {"raise", "coerce", "ignore"}, default "raise"
+        Whether invalid casts raise ``TypeCastError``, become null values, or
+        leave the affected column unchanged.
 
     Returns
     -------
@@ -1238,8 +1272,8 @@ def cast_types(
     >>> casted = ar.cast_types(frame, {"age": "int64", "score": "float64"})
     """
     frame, _ = _validate_frame(frame)
-    if errors not in {"raise", "coerce"}:
-        raise ValueError("errors must be either 'raise' or 'coerce'")
+    if errors not in {"raise", "coerce", "ignore"}:
+        raise ValueError("errors must be one of 'raise', 'coerce', or 'ignore'")
 
     mapping = _validate_string_mapping(mapping, argument_name="mapping")
     validate_columns_exist(
@@ -1248,11 +1282,20 @@ def cast_types(
         operation="cast_types",
     )
     try:
-        result = _cast_types(
-            frame._frame,
-            mapping,
-            errors == "coerce",
-        )
+        if errors == "ignore":
+            result = frame._frame
+            for column, dtype in mapping.items():
+                try:
+                    result = _cast_types(result, {column: dtype}, False)
+                except ValueError as e:
+                    if not str(e).startswith("Cannot cast column "):
+                        raise
+        else:
+            result = _cast_types(
+                frame._frame,
+                mapping,
+                errors == "coerce",
+            )
     except ValueError as e:
         raise TypeCastError(str(e)) from e
     return ArFrame(result)
@@ -1355,6 +1398,13 @@ def filter_rows(
 
     frame, is_arframe = _validate_frame(frame, allow_pandas=True)
 
+    if not isinstance(column, str) or not column.strip():
+        raise TypeError(
+            f"filter_rows: column must be a non-empty string, got {type(column).__name__!r}"
+        )
+
+    if not isinstance(op, str):
+        raise TypeError(f"filter_rows: op must be a string, got {type(op).__name__!r}")
     df = to_pandas(frame) if is_arframe else frame
 
     ops = {
@@ -1394,7 +1444,7 @@ def filter_rows(
 def round_numeric_columns(
     frame,
     *,
-    subset: list[str] | None = None,
+    subset: Sequence[str] | None = None,
     decimals: int = 0,
 ):
     """Round numeric columns to specified decimal places.
@@ -1405,7 +1455,7 @@ def round_numeric_columns(
     ----------
     frame : ArFrame or pd.DataFrame
         Input data frame.
-    subset : list[str], optional
+    subset : sequence of str, optional
         Column names to round. If None, applies to all numeric columns.
     decimals : int, default 0
         Number of decimal places to round to.
@@ -1423,8 +1473,7 @@ def round_numeric_columns(
     from .convert import from_pandas, to_pandas
 
     frame, is_arframe = _validate_frame(frame, allow_pandas=True)
-    if subset is not None and not isinstance(subset, list):
-        raise TypeError("subset must be a list of column names")
+
     if isinstance(decimals, bool) or not isinstance(decimals, int):
         raise TypeError("decimals must be an integer")
 
@@ -1507,6 +1556,7 @@ def combine_columns(
             subset,
             available_columns=column_names,
             argument_name="subset",
+            reject_duplicates=True,
             missing_message=lambda missing, available: (
                 f"Missing columns for combine_columns: {missing}. "
                 f"Available columns: {available}"
@@ -1996,6 +2046,7 @@ def coalesce_columns(
         subset,
         available_columns=column_names,
         argument_name="subset",
+        reject_duplicates=True,
         missing_message=lambda missing, available: (
             f"Missing columns for coalesce_columns: {missing}. "
             f"Available columns: {available}"
@@ -2080,7 +2131,7 @@ def clean_column_names(
         if original != updated
     }
     if not mapping:
-        return frame
+        return copy.deepcopy(frame)
 
     result = _rename_columns(frame._frame, mapping)
     return ArFrame(result)

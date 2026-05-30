@@ -964,7 +964,7 @@ Most operations below run natively in C++. Currently, `filter_rows`, `replace_va
 | `standardize_missing_tokens` | Replace common missing-value strings with NaN | `ar.standardize_missing_tokens(frame)` |
 | `normalize_case` | Force lower/upper/title case | `ar.normalize_case(frame, case_type="title")` |
 | `rename_columns` | Rename columns via mapping | `ar.rename_columns(frame, {"old": "new"})` |
-| `cast_types` | Cast column types | `ar.cast_types(frame, {"age": "int64"})` |
+| `cast_types` | Cast column types with `errors="raise"`, `"coerce"`, or `"ignore"` | `ar.cast_types(frame, {"age": "int64"}, errors="raise")` |
 | `round_numeric_columns` | Round numeric columns (non-numeric columns in subset ignored safely) | `ar.round_numeric_columns(frame, decimals=2)` |
 | `replace_values` | Replace values using a mapping (column or whole-frame). Handles `None`/`NaN`. | `ar.replace_values(frame, {"active": "A", "inactive": "I"}, column="status")` |
 | `clean` | Convenience shorthand | `ar.clean(frame, drop_nulls=True)` |
@@ -1368,10 +1368,24 @@ clean = ar.pipeline(frame, suggestions)
 For low-risk automatic cleanup in one call:
 
 ```python
-clean, report = ar.auto_clean(frame, mode="strict", return_report=True)
+clean, report = ar.auto_clean(frame, return_report=True)
 ```
 
-This is the layer pandas does not try to own: profiling, data contracts, row-level validation issues, and safe cleaning suggestions for messy incoming datasets.
+For strict automatic cleanup, inspect type casts before applying them:
+
+```python
+report = ar.auto_clean(frame, mode="strict", dry_run=True)
+cast_mapping = dict(report.suggestions).get("cast_types")
+
+clean = ar.auto_clean(
+    frame,
+    mode="strict",
+    allow_lossy_casts=True,
+    confirmed_casts=cast_mapping,
+)
+```
+
+This is the layer pandas does not try to own: profiling, data contracts, row-level validation issues, and preview-gated cleaning suggestions for messy incoming datasets.
 
 <br>
 
@@ -1424,7 +1438,7 @@ Expected cleaned output with `mode="strict"`:
 | 1003 | Pranay | New York |
 | 1004 | Dhruv | Tokyo |
 
-`mode="safe"` only trims whitespace. Use `mode="strict"` when you also want deterministic built-in cleanup such as exact duplicate removal.
+`mode="safe"` only trims whitespace. Use `mode="strict"` when you also want deterministic built-in cleanup such as exact duplicate removal. If strict mode proposes type casts, run `dry_run=True` first and pass the exact proposed mapping as `confirmed_casts` with `allow_lossy_casts=True`.
 
 See [examples/auto_clean_tutorial.py](examples/auto_clean_tutorial.py) for a runnable version of this walkthrough, and [examples/schema_validation.py](examples/schema_validation.py) for a focused validation tutorial.
 
@@ -1473,7 +1487,7 @@ sharing **aggregate statistics only** or **raw/sample cell values**.
 | `report.to_dict()` | Mixed | **Yes** — includes `sample_values` and `top_values` unless you redact samples |
 | `report.to_dict(redact_sample_values=True)` | Mixed | `sample_values` → `"[REDACTED]"` (same list length); `top_values[*].value` → `"[REDACTED]"` while counts and ratios remain |
 | `report.to_markdown()`, `report.summary()` | Yes | No raw cell values in output |
-| `report.to_html()` / notebook display of `report` | Partial | **Shows `top_values`** chips; does not list `sample_values` |
+| `report.to_html()` / notebook display of `report` | Partial | **Shows `top_values`** chips; does not list `sample_values`. Use `redact_top_values=True` or `exclude_columns` for safer sharing. |
 | `report.to_pandas()` | Partial | Includes **`top_values`**, not `sample_values` |
 | `ProfileComparison.to_dict()` | Nested profiles | **Yes** — embeds `left_profile` / `right_profile` via default `to_dict()` |
 
@@ -1485,7 +1499,7 @@ controls below for safer sharing.
 - **JSON logs and artifacts:** `report.to_dict(redact_sample_values=True)` before writing or uploading.
 - **Collect fewer samples:** `ar.profile(frame, sample_size=0)` skips `sample_values` (defaults still apply to `top_values` counts on string columns).
 - **Text summaries for CI or comments:** prefer `report.to_markdown()` or `report.summary()` when you do not need per-value examples.
-- **Notebooks and HTML exports:** avoid evaluating `report` or saving `report.to_html()` for sensitive data; HTML still shows `top_values`.
+- **Notebooks and HTML exports:** use `report.to_html(redact_top_values=True)` to replace every top-value chip label with `[REDACTED]` while preserving counts and ratios. To drop entire sensitive columns from the table, add `exclude_columns=["ssn", "email"]`. Avoid saving unredacted `report.to_html()` output for sensitive data.
 - **GitHub bug reports and examples:** use synthetic data (`user@example.com`, `ID-001`), a minimal CSV, and redacted `to_dict()` output — not production dumps.
 - **Pandas export:** `ar.to_pandas(frame)` returns full table data; redaction applies to **quality reports**, not the underlying frame.
 - **Profile comparison:** `ProfileComparison.to_dict()` nests full profiles; build shared artifacts with `profile.to_dict(redact_sample_values=True)` if needed.
@@ -1502,6 +1516,11 @@ report = ar.profile(df, sample_size=2)
 
 # Safer JSON for sharing (sample_values and top_values values redacted)
 safe_json = report.to_dict(redact_sample_values=True)
+
+# Safer HTML export (top-value chip labels replaced with [REDACTED])
+safe_html = report.to_html(redact_top_values=True)
+# or exclude an entire column from the HTML table:
+# safe_html = report.to_html(redact_top_values=True, exclude_columns=["email"])
 
 # Safer text summary (no sample_values or top_values in output)
 print(report.to_markdown())

@@ -1,3 +1,4 @@
+import importlib
 import warnings
 
 import numpy as np
@@ -9,6 +10,47 @@ pytest.importorskip("sklearn")
 from sklearn.pipeline import Pipeline  # noqa: E402
 
 from arnio.integrations.sklearn import ArnioCleaner  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Namespace discoverability tests (issue: from arnio.integrations import
+# ArnioCleaner should work when sklearn is installed)
+# ---------------------------------------------------------------------------
+
+
+def test_arniocleaner_importable_from_integrations_namespace():
+    """ArnioCleaner must be importable from arnio.integrations when sklearn is installed."""
+    from arnio.integrations import ArnioCleaner as AC  # noqa: PLC0415
+
+    assert AC is ArnioCleaner
+
+
+def test_arniocleaner_in_integrations_all():
+    """ArnioCleaner must be listed in arnio.integrations.__all__."""
+    import arnio.integrations as integrations  # noqa: PLC0415
+
+    assert "ArnioCleaner" in integrations.__all__
+
+
+def test_arniocleaner_missing_sklearn_raises_clear_import_error():
+    """When sklearn is absent, importing ArnioCleaner from arnio.integrations
+    must raise ImportError with a message directing users to install arnio[sklearn].
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    import arnio.integrations as integrations  # noqa: PLC0415
+
+    # Patch importlib.import_module inside the integrations __getattr__ so that
+    # importing "arnio.integrations.sklearn" behaves as if sklearn is not installed.
+    def _raise_import_error(name, *args, **kwargs):
+        if name == "arnio.integrations.sklearn":
+            raise ImportError("No module named 'sklearn'")
+        return importlib.import_module(name, *args, **kwargs)
+
+    with patch(
+        "arnio.integrations.importlib.import_module", side_effect=_raise_import_error
+    ):
+        with pytest.raises(ImportError, match="arnio\\[sklearn\\]"):
+            _ = integrations.__getattr__("ArnioCleaner")
 
 
 def test_arniocleaner_non_dataframe_input():
@@ -274,6 +316,46 @@ def test_arniocleaner_rejects_non_boolean_options():
             ArnioCleaner(copy=value).fit(df)
         with pytest.raises(TypeError, match="allow_row_count_change must be a bool"):
             ArnioCleaner(allow_row_count_change=value).fit(df)
+
+
+def test_arniocleaner_set_params_rejects_invalid_runtime_updates_and_rolls_back():
+    cleaner = ArnioCleaner(
+        copy=True, allow_row_count_change=False, allow_schema_changes=False
+    )
+
+    with pytest.raises(TypeError, match="copy must be a bool"):
+        cleaner.set_params(copy="not-a-bool")
+    assert cleaner.copy is True
+
+    with pytest.raises(TypeError, match="allow_row_count_change must be a bool"):
+        cleaner.set_params(allow_row_count_change="not-a-bool")
+    assert cleaner.allow_row_count_change is False
+
+    with pytest.raises(TypeError, match="allow_schema_changes must be a bool"):
+        cleaner.set_params(allow_schema_changes="not-a-bool")
+    assert cleaner.allow_schema_changes is False
+
+
+def test_arniocleaner_set_params_supports_valid_updates():
+    cleaner = ArnioCleaner()
+
+    returned = cleaner.set_params(copy=False, allow_row_count_change=True)
+
+    assert returned is cleaner
+    assert cleaner.copy is False
+    assert cleaner.allow_row_count_change is True
+
+
+def test_arniocleaner_pipeline_set_params_rejects_invalid_updates():
+    df = pd.DataFrame({"A": [1, 2]})
+    pipe = Pipeline([("arnio_prep", ArnioCleaner())])
+
+    with pytest.raises(TypeError, match="copy must be a bool"):
+        pipe.set_params(arnio_prep__copy="bad")
+
+    result = pipe.fit_transform(df)
+
+    assert isinstance(result, pd.DataFrame)
 
 
 def test_arniocleaner_construction_with_invalid_params_does_not_raise():

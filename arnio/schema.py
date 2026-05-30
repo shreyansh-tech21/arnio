@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -717,6 +718,8 @@ class Field:
                 )
             if not isinstance(self.required_if[0], str):
                 raise TypeError("required_if column name must be a string")
+            if not pd.api.types.is_scalar(self.required_if[1]):
+                raise TypeError("required_if expected value must be a scalar")
         if self.dtype in {"int64", "float64"}:
             if self.min is not None:
                 if isinstance(self.min, bool) or not isinstance(self.min, (int, float)):
@@ -724,6 +727,9 @@ class Field:
             if self.max is not None:
                 if isinstance(self.max, bool) or not isinstance(self.max, (int, float)):
                     raise TypeError("max must be numeric or None")
+            if self.min is not None and self.max is not None:
+                if self.min > self.max:
+                    raise ValueError("min must be less than or equal to max")
         if self.dtype is not None and not isinstance(self.dtype, str):
             raise TypeError(
                 f"dtype must be a str or None, got {type(self.dtype).__name__}"
@@ -966,6 +972,32 @@ class ValidationIssue:
     severity: str = "error"
 
     def __post_init__(self) -> None:
+        if not (self.column is None or isinstance(self.column, str)):
+            raise TypeError(
+                f"ValidationIssue 'column' must be a str or None, "
+                f"got {type(self.column).__name__}"
+            )
+        if not isinstance(self.rule, str) or not self.rule:
+            raise TypeError(
+                f"ValidationIssue 'rule' must be a non-empty str, "
+                f"got {type(self.rule).__name__}"
+            )
+        if not isinstance(self.message, str):
+            raise TypeError(
+                "ValidationIssue 'message' must be a str, "
+                f"got {type(self.message).__name__}"
+            )
+        if self.row_index is not None:
+            if isinstance(self.row_index, bool) or not isinstance(self.row_index, int):
+                raise TypeError(
+                    f"ValidationIssue 'row_index' must be an int or None, "
+                    f"got {type(self.row_index).__name__}"
+                )
+            if self.row_index < 0:
+                raise ValueError(
+                    f"ValidationIssue 'row_index' must be >= 0, "
+                    f"got {self.row_index}"
+                )
         _validate_severity(self.severity)
 
     def to_dict(self) -> dict[str, Any]:
@@ -1221,6 +1253,29 @@ class SchemaDiff:
         return "\n".join(lines)
 
 
+def _schema_rule_name(rule: Callable[[pd.DataFrame], list[ValidationIssue]]) -> str:
+    """Return a stable best-effort display name for a schema rule callable."""
+    qualname = getattr(rule, "__qualname__", None)
+    if isinstance(qualname, str) and qualname:
+        return qualname
+
+    name = getattr(rule, "__name__", None)
+    if isinstance(name, str) and name:
+        return name
+
+    rule_type = type(rule)
+    return getattr(rule_type, "__qualname__", rule_type.__name__)
+
+
+def _normalize_schema_rules(
+    rules: Sequence[Callable[[pd.DataFrame], list[ValidationIssue]]] | None,
+) -> tuple[str, ...] | None:
+    """Summarize schema rules by visible callable identity for diff output."""
+    if not rules:
+        return None
+    return tuple(_schema_rule_name(rule) for rule in rules)
+
+
 def diff_schema(
     expected: Schema | dict[str, Field],
     observed: Schema | dict[str, Field],
@@ -1238,7 +1293,10 @@ def diff_schema(
     -------
     SchemaDiff
         Structured differences covering missing columns, extra columns,
-        changed field attributes, and schema-level options.
+        changed field attributes, and schema-level options. Cross-field
+        ``Schema.rules`` are compared by best-effort callable identity using
+        visible callable names and rule count; exact callable equivalence is
+        intentionally not inferred.
     """
     expected_schema = expected if isinstance(expected, Schema) else Schema(expected)
     observed_schema = observed if isinstance(observed, Schema) else Schema(observed)
@@ -1303,6 +1361,19 @@ def diff_schema(
                 attribute="unique",
                 expected=_normalize_unique(expected_schema.unique),
                 observed=_normalize_unique(observed_schema.unique),
+            )
+        )
+
+    expected_rules = _normalize_schema_rules(expected_schema.rules)
+    observed_rules = _normalize_schema_rules(observed_schema.rules)
+    if expected_rules != observed_rules:
+        differences.append(
+            SchemaDiffEntry(
+                column=None,
+                change="changed_schema",
+                attribute="rules",
+                expected=expected_rules,
+                observed=observed_rules,
             )
         )
 
@@ -2034,7 +2105,19 @@ def CurrencyCode(
     Returns:
         Field: Configured 3-letter uppercase currency-code schema field.
     """
+
+    if isinstance(allowed, (str, bytes)):
+        raise TypeError(
+            "allowed must be a sequence of currency codes, not a bare string"
+        )
+
+    if allowed is not None:
+        for value in allowed:
+            if not isinstance(value, str):
+                raise TypeError("all allowed currency codes must be strings")
+
     allowed_set = set(allowed) if allowed is not None else None
+
     return Field(
         dtype="string",
         nullable=nullable,
@@ -2430,17 +2513,33 @@ def _validate_column(
                         {index: value for index, value in invalid_values}
                     )
                 elif field_def.semantic == "country_code":
-                    invalid = non_null[~non_null.isin(ISO_3166_1_ALPHA_2)]
+                    values = (
+                        non_null.str.upper()
+                        if not field_def.case_sensitive
+                        else non_null
+                    )
+                    invalid = non_null[~values.isin(ISO_3166_1_ALPHA_2)]
 
                 elif field_def.semantic == "language_code":
-                    invalid = non_null[~non_null.isin(ISO_639_1_CODES)]
+                    values = (
+                        non_null.str.lower()
+                        if not field_def.case_sensitive
+                        else non_null
+                    )
+                    invalid = non_null[~values.isin(ISO_639_1_CODES)]
+
                 elif field_def.semantic == "timezone":
                     invalid = non_null[~non_null.isin(IANA_TIMEZONES)]
                 elif field_def.semantic == "currency_code":
                     if field_def.allowed is not None:
                         invalid = pd.Series(dtype=object)
                     else:
-                        invalid = non_null[~non_null.isin(ISO_4217_CURRENCY_CODES)]
+                        values = (
+                            non_null.str.upper()
+                            if not field_def.case_sensitive
+                            else non_null
+                        )
+                        invalid = non_null[~values.isin(ISO_4217_CURRENCY_CODES)]
 
                 else:
                     invalid = non_null[~text.str.fullmatch(pattern, na=False)]
@@ -2663,24 +2762,43 @@ def _normalize_unique(
 
 
 def _normalize_sequence(value: Any) -> Any:
-    """Convert sets and tuples to lists for JSON-serializable output."""
+    """Convert sets and tuples to lists for JSON-serializable output.
+
+    Sets are sorted naturally when possible. If the set contains mixed
+    incomparable types (e.g. int and str), falls back to a type-safe key
+    so serialization never raises TypeError.
+    """
     if isinstance(value, set):
-        return sorted(value)
+        try:
+            return sorted(value)
+        except TypeError:
+            return sorted(value, key=lambda x: (type(x).__name__, repr(x)))
+
     if isinstance(value, tuple):
         return list(value)
     return value
 
 
 def _clean_scalar(value: Any) -> Any:
-    """Recursively convert numpy scalars and NaN values to JSON-safe Python types."""
+    """Recursively convert numpy/pandas values to JSON-safe Python types."""
     if isinstance(value, dict):
         return {key: _clean_scalar(val) for key, val in value.items()}
+
+    if isinstance(value, np.ndarray):
+        return [_clean_scalar(item) for item in value.tolist()]
+
     if isinstance(value, (list, tuple, set)):
         return [_clean_scalar(item) for item in value]
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+
     if pd.isna(value):
         return None
+
     if hasattr(value, "item"):
         return value.item()
+
     return value
 
 
@@ -2710,10 +2828,15 @@ _SEMANTIC_PATTERNS = {
 }
 
 # Registry for custom validators registered via register_validator()
-_CUSTOM_VALIDATORS: dict[str, callable] = {}
+_CUSTOM_VALIDATORS: dict[str, Callable[[Any], object]] = {}
 
 
-def register_validator(name: str, fn: callable) -> None:
+def register_validator(
+    name: str,
+    fn: Callable[[Any], object],
+    *,
+    overwrite: bool = False,
+) -> None:
     """Register a custom validator function for use with Custom().
 
     Parameters
@@ -2723,17 +2846,32 @@ def register_validator(name: str, fn: callable) -> None:
     fn : callable
         A function that accepts a scalar value and returns True if valid,
         False otherwise.
+    overwrite : bool, default False
+        If True, allows replacing an existing custom validator with the same
+        name.
+
+    Raises
+    ------
+    ValueError
+        If the validator name is already registered and `overwrite` is False.
 
     Examples
     --------
     >>> def is_positive(value):
     ...     return value > 0
     >>> ar.register_validator("positive", is_positive)
+    # Overwriting an existing validator intentionally
+    >>> ar.register_validator("positive", lambda value: value >= 0, overwrite=True)
     """
     if not callable(fn):
         raise TypeError("fn must be callable")
     if not isinstance(name, str) or not name:
         raise ValueError("name must be a non-empty string")
+    if name in _CUSTOM_VALIDATORS and not overwrite:
+        raise ValueError(
+            f"Validator {name!r} is already registered. "
+            "To intentionally overwrite it, set 'overwrite=True'."
+        )
     _CUSTOM_VALIDATORS[name] = fn
 
 

@@ -400,7 +400,9 @@ class ArFrame:
 
         actual_n = min(n, len(self))
 
-        return ArFrame(self._frame.select_rows(0, actual_n))
+        return ArFrame(
+            self._frame.select_rows(0, actual_n), attrs=copy.deepcopy(self._attrs)
+        )
 
     def tail(self, n: int = 5) -> ArFrame:
         """Return the last n rows as an ArFrame.
@@ -421,7 +423,9 @@ class ArFrame:
         actual_n = min(n, len(self))
         start = max(0, len(self) - actual_n)
 
-        return ArFrame(self._frame.select_rows(start, actual_n))
+        return ArFrame(
+            self._frame.select_rows(start, actual_n), attrs=copy.deepcopy(self._attrs)
+        )
 
     def to_dict(self) -> dict[str, list]:
         """Export the frame as a Python dictionary.
@@ -491,12 +495,12 @@ class ArFrame:
             self._frame.select_columns(columns), attrs=copy.deepcopy(self._attrs)
         )
 
-    def drop_columns(self, cols: list[str]) -> ArFrame:
+    def drop_columns(self, cols: list[str] | tuple[str, ...]) -> ArFrame:
         """Return a new ArFrame with the specified columns removed.
 
         Parameters
         ----------
-        cols : list[str]
+        cols : list[str] | tuple[str, ...]
             Column names to drop. Duplicates are silently ignored.
             An empty list returns a copy of the frame unchanged.
 
@@ -517,10 +521,11 @@ class ArFrame:
         --------
         >>> frame = ar.read_csv("data.csv")
         >>> smaller = frame.drop_columns(["col1", "col2"])
+        >>> smaller = frame.drop_columns(("col1", "col2"))
         """
-        if not isinstance(cols, list):
+        if not isinstance(cols, (list, tuple)):
             raise TypeError(
-                f"cols must be a list of column names, got {type(cols).__name__!r}"
+                f"cols must be a list or tuple of column names, got {type(cols).__name__!r}"
             )
 
         if any(not isinstance(col, str) for col in cols):
@@ -709,6 +714,14 @@ class ArFrame:
 
         if rows == 0:
             return f"{header}\nColumns: {truncated_names}\n(empty frame)"
+
+        if cols == 0:
+            dtypes_line = f"DTypes: {self.dtypes}"
+            memory_line = f"Memory: {self.memory_usage()} bytes"
+            return (
+                f"{header}\nColumns: {truncated_names}\n{dtypes_line}\n"
+                f"{memory_line}\n(no columns to display)"
+            )
 
         actual_n = min(5, rows)
         col_data = [
